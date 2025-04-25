@@ -1,0 +1,133 @@
+---
+title: "Avg_Trait_PCA"
+output: html_document
+date: "2025-04-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+
+## Load libraries
+```{r cars}
+
+library(readr)
+library(dplyr)
+library(factoextra)
+library(ggplot2) 
+library(ggfortify) 
+library(ggrepel)
+```
+
+
+## load data
+```{r}
+# Read the data from the CSV file
+data <- read_csv("data/averagetraitstrim.csv")
+```
+
+## convert genotype to factor
+```{r}
+# Convert 'genotype' to a factor
+data$genotype <- as.factor(data$genotype)
+
+```
+
+
+# perform PCA
+
+## run PCA
+```{r}
+# Perform PCA on the numerical data
+# Assuming all other columns except for 'genotype' and 'plant' are numerical
+pca_data <- dplyr::select(data, -genotype)
+pca_results <- prcomp(pca_data, scale. = TRUE)
+
+pca_results$x[,1]
+
+pca_results
+```
+
+
+## graph of each PC's contributions
+```{r}
+
+fviz_eig(pca_results)
+```
+
+## plot first 3 PC's against each other 
+
+### PC1 v PC2
+```{r}
+pca_plot_1v2 <- autoplot(pca_results, 
+                     x = 1,
+                     y = 2,
+                     data = data, label = FALSE) +
+  geom_point(aes(colour = genotype), size = 3) +
+  geom_label_repel(aes(label = genotype, colour = genotype), 
+                   box.padding = 0.5, 
+                   point.padding = 0.5,
+                   show.legend = FALSE)
+
+pca_plot_1v2
+```
+### PC1 v PC2
+```{r}
+pca_plot_1v3 <- autoplot(pca_results, 
+                     x = 1,
+                     y = 3,
+                     data = data, label = FALSE) +
+  geom_point(aes(colour = genotype), size = 3) +
+  geom_label_repel(aes(label = genotype, colour = genotype), 
+                   box.padding = 0.5, 
+                   point.padding = 0.5,
+                   show.legend = FALSE)
+
+pca_plot_1v3
+```
+### PC2 v PC3
+```{r}
+pca_plot_2v3 <- autoplot(pca_results, 
+                     x = 2,
+                     y = 3,
+                     data = data, label = FALSE) +
+  geom_point(aes(colour = genotype), size = 3) +
+  geom_label_repel(aes(label = genotype, colour = genotype), 
+                   box.padding = 0.5, 
+                   point.padding = 0.5,
+                   show.legend = FALSE)
+
+pca_plot_2v3
+```
+
+# get top contributors to each PC
+
+## extract loadings
+```{r}
+# Extract loadings
+loadings <- pca_results$rotation
+
+# View loadings
+print(loadings)
+```
+
+
+## sort in order of decreasing contribution
+```{r}
+# Get the magnitude of the loadings for each component
+loading_magnitudes <- abs(loadings)  # Take the absolute value to consider both positive and negative contributions
+
+# Determine the top contributing traits for the first few components
+top_contributors_pc1 <- sort(loading_magnitudes[, 1], decreasing = TRUE)
+top_contributors_pc2 <- sort(loading_magnitudes[, 2], decreasing = TRUE)
+top_contributors_pc3 <- sort(loading_magnitudes[, 3], decreasing = TRUE)
+
+# Print top contributors for PC1 and PC2
+print(top_contributors_pc1[1:5])  # adjust to get more or fewer traits
+print(top_contributors_pc2[1:5])
+print(top_contributors_pc3[1:5])
+
+```
+
