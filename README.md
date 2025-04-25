@@ -10,6 +10,7 @@ The repository includes:
 ---
 
 ## Repository Structure
+```
 rice-hk-analysis/
 ├── data/
 │   ├── output/
@@ -23,7 +24,7 @@ rice-hk-analysis/
 │   └── rnaseqanalysis.html
 ├── README.md
 └── LICENSE
-
+```
 
 
 ## License
