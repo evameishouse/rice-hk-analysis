@@ -1,0 +1,604 @@
+---
+title: "rnaseqanalysis"
+output: html_document
+date: "2024-12-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# setup
+
+
+## load libraries
+```{r}
+# Load necessary libraries
+library(tximport)
+library(DESeq2)
+library(biomaRt)
+library(VennDetail)
+library(VennDiagram)
+library(ggplot2)
+library(readr)
+library(tidyverse)
+library(ggrepel)
+library(patchwork)
+library(pheatmap)
+
+```
+
+
+## sample setup
+
+### set up sample names and info etc.
+```{r}
+## set up experimental parameters
+#Sample File Names
+sample_names <- c(
+  "13+BA", 
+  "54a+BA", 
+  "54b+BA",
+  "13+veh", 
+  "54a+veh",
+  "54b+veh",
+  "A1+BA", 
+  "B1+BA", 
+  "B4+BA", 
+  "A1+veh", 
+  "B1+veh",
+  "B4+veh"
+)
+
+# Define sample names for all samples
+# Sample information data frame
+sample_info <- data.frame(
+  sampleName = c(
+    "13+BA", 
+    "54a+BA", 
+    "54b+BA",
+    "13+veh", 
+    "54a+veh",
+    "54b+veh",
+    "A1+BA", 
+    "B1+BA", 
+    "B4+BA", 
+    "A1+veh", 
+    "B1+veh",
+    "B4+veh"
+  ),
+  genotype = c(rep("hk3456", 6), rep("wildtype", 6)),
+  treatment = c(rep("BA", 3), rep("veh", 3), rep("BA", 3), rep("veh", 3))
+)
+
+# Sample information data frame
+sample_info <- data.frame(
+  genotype = c(rep("hk3456", 6), rep("wildtype", 6)),
+  treatment = c(rep("BA", 3), rep("veh", 3), rep("BA", 3), rep("veh", 3)),
+  row.names = c(
+    "13+BA", "54a+BA", "54b+BA",
+    "13+veh", "54a+veh", "54b+veh",
+    "A1+BA", "B1+BA", "B4+BA",
+    "A1+veh", "B1+veh", "B4+veh"
+  )
+)
+```
+
+### finish setting up sample info
+```{r}
+# Set the reference levels for factors
+sample_info$genotype <- factor(sample_info$genotype, levels = c("wildtype", "hk3456"))
+sample_info$treatment <- factor(sample_info$treatment, levels = c("veh", "BA"))
+```
+
+## paths to files
+
+### path to kallisto output (count matrix)
+```{r}
+# Define the paths to Kallisto output directories
+kallisto_dirs <- file.path("data/output", sample_names)
+files <- file.path(kallisto_dirs, "abundance.h5")
+names(files) <- sample_names
+```
+
+
+### path to reference transcriptome
+```{r}
+# get gene info for importing counts matrix
+# Path to your extracted or gzipped FASTA file
+fasta_file <- "data/Oryza_sativa.IRGSP-1.0.cdna.all.fa.gz"
+```
+
+
+
+### get gene names formatted correctly 
+```{r}
+# Open and read the FASTA file
+fasta_lines <- read_lines(fasta_file)
+
+# Extract lines that are headers (start with ">")
+headers <- grep("^>", fasta_lines, value = TRUE)
+
+# Inspect the structure of a few headers to adjust pattern
+print(headers[1:5])
+```
+
+```{r}
+# Parse headers to create tx2gene mapping
+tx2gene <- data.frame(
+  transcript_id = sub(" .*", "", sub("^>", "", headers)),  # Extract transcript ID (everything after ">" up to the first space)
+  gene_id = sub(".*gene:", "", headers) %>%                # Extract everything after "gene:"
+    sub(" .*", "", .)                             # Remove everything after the next space
+)
+
+# Remove any unnecessary characters from gene_id
+tx2gene$gene_id <- sub("\\..*", "", tx2gene$gene_id) # Adjust if necessary based on the format
+
+# Preview the first few lines of the tx2gene mapping
+head(tx2gene)
+```
+
+```{r}
+# Remove "transcript-" prefix from transcript_id
+tx2gene$transcript_id <- sub("^transcript-", "", tx2gene$transcript_id)
+
+# Remove "gene-" prefix from gene_id
+tx2gene$gene_id <- sub("^gene-", "", tx2gene$gene_id)
+
+# Preview the first few lines of the cleaned tx2gene mapping
+head(tx2gene)
+```
+# make dds object for deseq analysis
+
+## import kallisto file and align with reference transcriptome
+```{r}
+## importing!
+# Import the data with tximport
+txi <- tximport(files, type = "kallisto", tx2gene = tx2gene)
+```
+
+## create dds for deseq2 analysis
+
+### import data from txi to dds
+```{r}
+# Create DESeq2 dataset
+
+dds <- DESeqDataSetFromTximport(txi, colData = sample_info, design = ~ 1)
+
+```
+### set experimental design
+```{r}
+design(dds) <- ~ genotype * treatment
+```
+
+
+### normalize counts in DESeq
+```{r}
+# Normalize counts
+dds <- DESeq(dds)
+```
+
+
+# analysis part 1: PCA
+
+
+
+## rlog transformation 
+```{r}
+rld <- rlog(dds, blind = FALSE)
+
+# PCA with rlog
+plotPCA(rld, intgroup = c("genotype", "treatment"))
+
+
+```
+## PCA with samples labeled
+```{r}
+# Extract PCA data
+pcaData <- plotPCA(rld, intgroup = c("genotype", "treatment"), returnData = TRUE)
+
+# Add sample names to the PCA data
+pcaData$Sample <- rownames(pcaData)
+
+# Calculate percent variance explained by each principal component
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+# Plot using ggplot2 with sample names as labels
+# Assuming pcaData contains PCA data and Sample labels
+ggplot(pcaData, aes(x = PC1, y = PC2, color = genotype, shape = treatment, label = Sample)) +
+  geom_point(size = 5) +
+  geom_text_repel() +  # Automatically adjust labels to avoid overlap and stay within bounds
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  theme_minimal() +
+  ggtitle("PCA of RNA-seq Data") + 
+  theme(plot.title = element_text(size = 20, hjust = 0.5),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 12))
+```
+
+
+
+
+
+
+
+
+# differential expression analysis
+
+
+## make sure design is correct here. should have following results listed:
+"Intercept"                   "genotype_hk3456_vs_wildtype" "treatment_BA_vs_veh"         "genotypehk3456.treatmentBA" 
+
+```{r}
+## making volcano plot of data
+
+resultsNames(dds)
+```
+## generate results for each comparison of interest
+```{r}
+# Compare wildtype + veh vs. wildtype + BA
+res_wt_veh_vs_wt_ba <- results(dds, contrast = c("treatment", "BA", "veh"))
+
+# Compare hk3456 + veh vs. hk3456 + BA
+res_hk3456_veh_vs_hk3456_ba <- results(dds, contrast = list(c("treatment_BA_vs_veh", "genotypehk3456.treatmentBA")))
+
+# Compare wildtype + veh vs. hk3456 + veh
+res_wt_veh_vs_hk3456_veh <- results(dds, contrast = c("genotype", "hk3456", "wildtype"))
+
+
+```
+
+## make volcano plots for each comparison
+
+### function to make volcano plots
+```{r}
+# Define the function to create a volcano plot
+create_volcano_plot <- function(results, plot_title) {
+  # Convert results to a data frame and add -log10(p-value)
+  res_df <- as.data.frame(results)
+  res_df$log10_padj <- -log10(res_df$padj)
+  
+  # Adding a significance column based on both adjusted p-value and log2 fold change
+  res_df$significance <- "Not Significant"
+  res_df$significance[res_df$padj < 0.05 & res_df$log2FoldChange > 1] <- "Significant Upregulated"
+  res_df$significance[res_df$padj < 0.05 & res_df$log2FoldChange < -1] <- "Significant Downregulated"
+  
+  # Create the volcano plot
+  p <- ggplot(res_df, aes(x = log2FoldChange, y = log10_padj)) +
+    geom_point(aes(color = significance), alpha = 0.8) +
+    scale_color_manual(values = c("Not Significant" = "gray",
+                                  "Significant Upregulated" = "red",
+                                  "Significant Downregulated" = "blue")) +
+    xlab("Log2 Fold Change") +
+    ylab("-Log10 Adjusted P-value") +
+    ggtitle(plot_title) +
+    xlim(-23, 23) +
+    ylim(0, 70) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      axis.title = element_text(size = 12)
+    ) +
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black")
+  
+  return(p)
+}
+```
+
+### make all plots
+```{r}
+# Create plots using the function
+plot1 <- create_volcano_plot(res_wt_veh_vs_hk3456_veh, "hk3,4,5,6 untreated vs WT untreated")
+plot2 <- create_volcano_plot(res_hk3456_veh_vs_hk3456_ba, "hk3,4,5,6 +/- 5uM BA")
+plot3 <- create_volcano_plot(res_wt_veh_vs_wt_ba, "WT +/- 5uM BA")
+```
+
+### view plots
+```{r}
+# Display plots
+print(plot1)
+print(plot2)
+print(plot3)
+```
+
+## make DE gene heatmap for known cytokinin response genes (Type-A Response Regulators and Cytokinin Oxidases)
+
+
+### load gene list with cytokinin response gene names and associated RAP Ids
+```{r}
+genes_of_interest_converted <- read_csv("data/typeackxgenes.csv")
+```
+
+### get ensembl gene annotations
+```{r}
+# Annotate genes using biomaRt
+ensembl <- useEnsemblGenomes(biomart = "plants_mart", dataset = "osativa_eg_gene")
+
+```
+
+
+### function to annotate genes in results files from ensembl
+```{r}
+# ensembl annotation function
+annotate_ensembl <- function (ensembl, results, padj_cutoff) {
+  # Extract the significant genes
+  sig_genes <- subset(results, padj < padj_cutoff)
+  gene_ids <- rownames(sig_genes)
+  
+  # Retrieve gene annotations
+  annotations <- getBM(
+    attributes = c("ensembl_transcript_id", "ensembl_gene_id", "external_gene_name", "description"),
+    filters = "ensembl_transcript_id",
+    values = gene_ids,
+    mart = ensembl
+  )
+  
+  # Merge gene annotation with DESeq2 results
+  annotated_results <- merge(as.data.frame(sig_genes), annotations, by.x = "row.names", by.y = "ensembl_transcript_id", all.x = TRUE)
+  
+  #return annotated results
+  annotated_results
+}
+
+```
+
+
+### annotate desired results of interest
+```{r}
+
+annotated_wt <- annotate_ensembl(ensembl, res_wt_veh_vs_wt_ba, 0.05)
+annotated_hk3456 <- annotate_ensembl(ensembl, res_hk3456_veh_vs_hk3456_ba, 0.05)
+annotated_wtvhk3456veh <- annotate_ensembl(ensembl, res_wt_veh_vs_hk3456_veh, 0.05)
+```
+
+### view headers of each, make sure first column is Rap ID
+```{r}
+head(annotated_wt)
+head(annotated_hk3456)
+head(annotated_wtvhk3456veh)
+```
+
+### make sure no NA genes
+```{r}
+# Filter each dataset based on rap_id and padj < 0.05
+filtered_annotated_wt <- annotated_wt[
+  annotated_wt$Row.names %in% genes_of_interest_converted$rap_id & 
+  !is.na(annotated_wt$padj) & 
+  annotated_wt$padj < 0.05, 
+]
+
+filtered_annotated_hk3456 <- annotated_hk3456[
+  annotated_hk3456$Row.names %in% genes_of_interest_converted$rap_id & 
+  !is.na(annotated_hk3456$padj) & 
+  annotated_hk3456$padj < 0.05, 
+]
+
+filtered_annotated_wtvhk3456veh <- annotated_wtvhk3456veh[
+  annotated_wtvhk3456veh$Row.names %in% genes_of_interest_converted$rap_id & 
+  !is.na(annotated_wtvhk3456veh$padj) & 
+  annotated_wtvhk3456veh$padj < 0.05, 
+]
+
+
+```
+
+
+### initilize data frames to all be the same size for the heat map
+```{r}
+# Initialize empty dataframes for each dataset
+complete_wt <- data.frame(
+    rap_id = genes_of_interest_converted$rap_id,
+    log2FoldChange = NA  # Default NA for missing genes
+)
+
+complete_hk3456 <- complete_wt
+complete_wtvhk3456veh <- complete_wt
+```
+
+### fill out intiilized data frames
+```{r}
+# Fill log2FoldChange where matches are found
+matched_wt <- filtered_annotated_wt[match(genes_of_interest_converted$rap_id, filtered_annotated_wt$Row.names), ]
+complete_wt$log2FoldChange <- matched_wt$log2FoldChange
+
+matched_hk3456 <- filtered_annotated_hk3456[match(genes_of_interest_converted$rap_id, filtered_annotated_hk3456$Row.names), ]
+complete_hk3456$log2FoldChange <- matched_hk3456$log2FoldChange
+
+matched_wtvhk3456veh <- filtered_annotated_wtvhk3456veh[match(genes_of_interest_converted$rap_id, filtered_annotated_wtvhk3456veh$Row.names), ]
+complete_wtvhk3456veh$log2FoldChange <- matched_wtvhk3456veh$log2FoldChange
+
+```
+
+### generate the log2FC matrix
+```{r}
+# Combine log2FoldChange values into a matrix
+log2fc_matrix <- cbind(
+    WT = complete_wt$log2FoldChange,
+    HK3456 = complete_hk3456$log2FoldChange,
+    WTvHK3456Veh = complete_wtvhk3456veh$log2FoldChange
+)
+
+# Assign row names based on rap_id
+rownames(log2fc_matrix) <- genes_of_interest_converted$gene
+
+```
+
+
+
+```{r}
+library(pheatmap)
+
+
+# Define color breaks from -6 to 6
+breaks_list <- seq(-6, 6, length.out = 50)
+
+# Generate the heatmap
+pheatmap(log2fc_matrix,
+         scale = "none",                # No scaling, as we are using log2 fold changes directly
+         cluster_rows = FALSE,
+         cluster_cols = FALSE,
+         show_rownames = TRUE,          # Show gene names
+         show_colnames = TRUE,          # Show dataset names
+         main = "Heatmap of Log2 Fold Changes for Genes of Interest",
+         color = colorRampPalette(c("blue", "white", "red"))(50),  # Custom color scale
+         breaks = breaks_list,          # Explicitly define color scale range
+         na_col = "grey")               # Explicitly display NA values as grey
+              # Explicitly display NA values as grey
+
+```
+
+
+
+## make venn diagrams of gene comparisons
+
+### prepare data for comparisons of interest
+```{r}
+# Upregulated and downregulated genes from WT results
+up_wt <- rownames(res_wt_veh_vs_wt_ba[!is.na(res_wt_veh_vs_wt_ba$padj) & 
+                                        res_wt_veh_vs_wt_ba$padj < 0.05 & 
+                                        res_wt_veh_vs_wt_ba$log2FoldChange > 1, ])
+
+down_wt <- rownames(res_wt_veh_vs_wt_ba[!is.na(res_wt_veh_vs_wt_ba$padj) & 
+                                          res_wt_veh_vs_wt_ba$padj < 0.05 & 
+                                          res_wt_veh_vs_wt_ba$log2FoldChange < -1, ])
+
+
+# Upregulated genes for res_wt_veh_vs_hk3456_veh
+up_wt_vs_hk_veh <- rownames(res_wt_veh_vs_hk3456_veh[!is.na(res_wt_veh_vs_hk3456_veh$padj) &
+                                                       res_wt_veh_vs_hk3456_veh$padj < 0.05 &
+                                                       res_wt_veh_vs_hk3456_veh$log2FoldChange > 1, ])
+
+# Downregulated genes for res_wt_veh_vs_hk3456_veh
+down_wt_vs_hk_veh <- rownames(res_wt_veh_vs_hk3456_veh[!is.na(res_wt_veh_vs_hk3456_veh$padj) &
+                                                         res_wt_veh_vs_hk3456_veh$padj < 0.05 &
+                                                         res_wt_veh_vs_hk3456_veh$log2FoldChange < -1, ])
+
+
+
+```
+
+### generate venn diagram plots
+
+#### all upregulated 
+```{r}
+library(ggvenn)
+# Prepare data for Venn diagram
+venn_data_up <- list(
+  WT_vs_HK_VEH_Downregulated = down_wt_vs_hk_veh,
+  WT_vs_WT_BA_Upregulated = up_wt
+)
+
+# Generate the Venn diagram
+ggvenn(venn_data_up, 
+       fill_color = c("#0072B2", "#E69F00"),  # Color-blind friendly palette
+       stroke_size = 0.5, 
+       set_name_size = 5)
+
+```
+#### all downregulated
+```{r}
+# Prepare data for Venn diagram
+venn_data_down <- list(
+  WT_vs_HK_VEH_Upregulated = up_wt_vs_hk_veh,
+  WT_vs_WT_BA_Downregulated = down_wt
+)
+
+# Generate the Venn diagram
+ggvenn(venn_data_down, 
+       fill_color = c("#0072B2", "#E69F00"),  # Color-blind friendly palette
+       stroke_size = 0.5, 
+       set_name_size = 5)
+
+```
+
+
+
+
+## hypergeometric test of DE gene lists
+
+### extract total genes from dds object
+```{r}
+# Get the full list of genes considered in DESeq2
+total_genes_list <- rownames(dds)
+
+# Get the total number of genes for the hypergeometric test
+total_genes <- length(total_genes_list)
+
+# Print total gene count
+cat("Total number of genes in transcriptome:", total_genes, "\n")
+
+```
+
+
+### filter genes
+```{r}
+
+# Define significance thresholds
+log2FC_threshold <- 1
+padj_threshold <- 0.05
+
+# Remove NA values from the results before filtering
+filtered_wt_veh_vs_wt_ba <- res_wt_veh_vs_wt_ba[!is.na(res_wt_veh_vs_wt_ba$padj) & !is.na(res_wt_veh_vs_wt_ba$log2FoldChange), ]
+filtered_wt_veh_vs_hk3456_veh <- res_wt_veh_vs_hk3456_veh[!is.na(res_wt_veh_vs_hk3456_veh$padj) & !is.na(res_wt_veh_vs_hk3456_veh$log2FoldChange), ]
+
+# Filter DE genes for WT_VEH vs WT_BA
+up_wt_veh_vs_wt_ba <- rownames(filtered_wt_veh_vs_wt_ba)[
+  filtered_wt_veh_vs_wt_ba$log2FoldChange > log2FC_threshold & filtered_wt_veh_vs_wt_ba$padj < padj_threshold]
+
+down_wt_veh_vs_wt_ba <- rownames(filtered_wt_veh_vs_wt_ba)[
+  filtered_wt_veh_vs_wt_ba$log2FoldChange < -log2FC_threshold & filtered_wt_veh_vs_wt_ba$padj < padj_threshold]
+
+# Filter DE genes for WT_VEH vs HK3456_VEH
+up_wt_veh_vs_hk3456_veh <- rownames(filtered_wt_veh_vs_hk3456_veh)[
+  filtered_wt_veh_vs_hk3456_veh$log2FoldChange > log2FC_threshold & filtered_wt_veh_vs_hk3456_veh$padj < padj_threshold]
+
+down_wt_veh_vs_hk3456_veh <- rownames(filtered_wt_veh_vs_hk3456_veh)[
+  filtered_wt_veh_vs_hk3456_veh$log2FoldChange < -log2FC_threshold & filtered_wt_veh_vs_hk3456_veh$padj < padj_threshold]
+
+# Print counts of upregulated and downregulated genes
+cat("Upregulated in WT_VEH vs WT_BA:", length(up_wt_veh_vs_wt_ba), "\n")
+cat("Downregulated in WT_VEH vs WT_BA:", length(down_wt_veh_vs_wt_ba), "\n")
+cat("Upregulated in WT_VEH vs HK3456_VEH:", length(up_wt_veh_vs_hk3456_veh), "\n")
+cat("Downregulated in WT_VEH vs HK3456_VEH:", length(down_wt_veh_vs_hk3456_veh), "\n")
+
+# Check if there are still NA values
+cat("Any NA in up_wt_veh_vs_wt_ba:", any(is.na(up_wt_veh_vs_wt_ba)), "\n")
+cat("Any NA in down_wt_veh_vs_wt_ba:", any(is.na(down_wt_veh_vs_wt_ba)), "\n")
+cat("Any NA in up_wt_veh_vs_hk3456_veh:", any(is.na(up_wt_veh_vs_hk3456_veh)), "\n")
+cat("Any NA in down_wt_veh_vs_hk3456_veh:", any(is.na(down_wt_veh_vs_hk3456_veh)), "\n")
+
+
+
+```
+
+### run hypergeometric test
+```{r}
+# Define hypergeometric test function
+run_hypergeo_test <- function(set1, set2, total_genes) {
+  x <- length(intersect(set1, set2))  # Overlap
+  K <- length(set1)  # Size of first gene set
+  n <- length(set2)  # Size of second gene set
+  N <- total_genes  # Background gene count
+  
+  # Perform hypergeometric test
+  p_value <- phyper(q = x - 1, m = K, n = N - K, k = n, lower.tail = FALSE)
+  
+  # Return results
+  return(list(overlap_size = x, p_value = p_value))
+}
+
+# Extract total number of genes from the transcriptome
+total_genes <- length(rownames(res_wt_veh_vs_wt_ba))  # Assuming both comparisons used the same gene set
+
+# Run tests for different comparisons
+test1 <- run_hypergeo_test(up_wt_veh_vs_wt_ba, down_wt_veh_vs_hk3456_veh, total_genes)
+cat("Up in WT_BA & Down in HK3456_VEH - Overlap:", test1$overlap_size, " P-value:", test1$p_value, "\n")
+
+test2 <- run_hypergeo_test(down_wt_veh_vs_wt_ba, up_wt_veh_vs_hk3456_veh, total_genes)
+cat("Down in WT_BA & Up in HK3456_VEH - Overlap:", test2$overlap_size, " P-value:", test2$p_value, "\n")
+
+
+```
+

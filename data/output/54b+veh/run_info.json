@@ -1,0 +1,13 @@
+{
+	"n_targets": 42789,
+	"n_bootstraps": 0,
+	"n_processed": 24127052,
+	"n_pseudoaligned": 22564573,
+	"n_unique": 15744653,
+	"p_pseudoaligned": 93.5,
+	"p_unique": 65.3,
+	"kallisto_version": "0.46.1",
+	"index_version": 10,
+	"start_time": "Fri Jul 12 11:58:40 2024",
+	"call": "C:\Program Files\kallisto\kallisto.exe quant -i Oryza_sativa.idx -o output/54b+veh -t 12 F24A480000412_ORYsgquR/54b+veh/54b+veh_1.fq.gz F24A480000412_ORYsgquR/54b+veh/54b+veh_2.fq.gz"
+}
