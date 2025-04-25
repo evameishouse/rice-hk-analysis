@@ -22,6 +22,9 @@ rice-hk-analysis/
 ├── rnaseqanalysis/
 │   ├── rnaseqanalysis.Rmd
 │   └── rnaseqanalysis.html
+├── avgtraitpca/
+│   ├── avg_trait_pca.Rmd
+│   └── avg_trait_pca.html
 ├── README.md
 └── LICENSE
 ```
