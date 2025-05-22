@@ -96,7 +96,7 @@ sample_info$treatment <- factor(sample_info$treatment, levels = c("veh", "BA"))
 ### path to kallisto output (count matrix)
 ```{r}
 # Define the paths to Kallisto output directories
-kallisto_dirs <- file.path("data/output", sample_names)
+kallisto_dirs <- file.path("data/kallisto_output", sample_names)
 files <- file.path(kallisto_dirs, "abundance.h5")
 names(files) <- sample_names
 ```
@@ -600,5 +600,127 @@ test2 <- run_hypergeo_test(down_wt_veh_vs_wt_ba, up_wt_veh_vs_hk3456_veh, total_
 cat("Down in WT_BA & Up in HK3456_VEH - Overlap:", test2$overlap_size, " P-value:", test2$p_value, "\n")
 
 
+```
+
+## add TPMs to list of DE genes
+
+### extract TPMs from txi
+```{r}
+tpm_matrix <- txi$abundance
+
+```
+
+### extract list of DE genes from results
+```{r}
+sig_genes_wt_ba <- rownames(res_wt_veh_vs_wt_ba)[which(res_wt_veh_vs_wt_ba$padj < 0.05)]
+
+
+sig_genes_hk3456_ba <- rownames(res_hk3456_veh_vs_hk3456_ba)[which(res_hk3456_veh_vs_hk3456_ba$padj < 0.05)]
+
+
+sig_genes_hk3456_wt <- rownames(res_wt_veh_vs_hk3456_veh)[which(res_wt_veh_vs_hk3456_veh$padj < 0.05)]
+```
+
+### subset TPM matrix for each list of DE genes
+```{r}
+tpm_wt_ba <- tpm_matrix[sig_genes_wt_ba, ]
+tpm_hk3456_ba <- tpm_matrix[sig_genes_hk3456_ba, ]
+tpm_hk3456_wt <- tpm_matrix[sig_genes_hk3456_wt, ]
+
+```
+
+### function to get means from all replicates for each treatment:genotype 
+```{r}
+get_mean_tpm <- function(tpm_df) {
+  data.frame(
+    gene = rownames(tpm_df),
+    wt_ba_mean = rowMeans(tpm_df[, wt_ba_samples, drop = FALSE]),
+    wt_veh_mean = rowMeans(tpm_df[, wt_veh_samples, drop = FALSE]),
+    hk3456_ba_mean = rowMeans(tpm_df[, hk3456_ba_samples, drop = FALSE]),
+    hk3456_veh_mean = rowMeans(tpm_df[, hk3456_veh_samples, drop = FALSE])
+  )
+}
+
+
+```
+
+### define samples
+```{r}
+# Find sample names for each condition
+wt_ba_samples <- rownames(sample_info)[sample_info$genotype == "wildtype" & sample_info$treatment == "BA"]
+wt_veh_samples <- rownames(sample_info)[sample_info$genotype == "wildtype" & sample_info$treatment == "veh"]
+hk3456_ba_samples <- rownames(sample_info)[sample_info$genotype == "hk3456" & sample_info$treatment == "BA"]
+hk3456_veh_samples <- rownames(sample_info)[sample_info$genotype == "hk3456" & sample_info$treatment == "veh"]
+
+```
+
+
+### get mean TPMs for each DE results
+```{r}
+tpm_wt_ba_summary <- get_mean_tpm(tpm_wt_ba)
+hk3456_ba_summary <- get_mean_tpm(tpm_hk3456_ba)
+hk3456_wt_summary <- get_mean_tpm(tpm_hk3456_wt)
+```
+
+
+### prepare DE results
+```{r}
+de_wt_ba_df <- as.data.frame(res_wt_veh_vs_wt_ba)
+de_wt_ba_df$gene <- rownames(de_wt_ba_df)
+
+de_hk3456_ba_df <- as.data.frame(res_hk3456_veh_vs_hk3456_ba)
+de_hk3456_ba_df$gene <- rownames(de_hk3456_ba_df)
+
+de_hk3456_wt_df <- as.data.frame(res_wt_veh_vs_hk3456_veh)
+de_hk3456_wt_df$gene <- rownames(de_hk3456_wt_df)
+
+
+
+```
+
+
+
+### filter only significantly DE genes (padj < 0.05 and |log2FC| > 1)
+```{r}
+de_wt_ba_sig <- de_wt_ba_df %>% 
+  filter(!is.na(padj) & padj < 0.05 & abs(log2FoldChange) > 1)
+
+de_hk3456_ba_sig <- de_hk3456_ba_df %>% 
+  filter(!is.na(padj) & padj < 0.05 & abs(log2FoldChange) > 1)
+
+de_hk3456_wt_sig <- de_hk3456_wt_df %>% 
+  filter(!is.na(padj) & padj < 0.05 & abs(log2FoldChange) > 1)
+
+
+```
+
+
+
+
+### join with TPM
+```{r}
+de_wt_ba_sig_annotated <- left_join(de_wt_ba_sig, tpm_wt_ba_summary, by = "gene")
+de_hk3456_ba_sig_annotated <- left_join(de_hk3456_ba_sig, hk3456_ba_summary, by = "gene")
+de_hk3456_wt_sig_annotated <- left_join(de_hk3456_wt_sig, hk3456_wt_summary, by = "gene")
+
+
+# reorder so gene is first
+de_wt_ba_sig_annotated <- de_wt_ba_sig_annotated %>% select(gene, everything())
+de_hk3456_ba_sig_annotated <- de_hk3456_ba_sig_annotated %>% select(gene, everything())
+de_hk3456_wt_sig_annotated <- de_hk3456_wt_sig_annotated %>% select(gene, everything())
+
+
+# write to CSV
+write.csv(de_wt_ba_sig_annotated, "output/de_wt_ba_sig_with_tpm.csv", row.names = FALSE)
+
+write.csv(de_hk3456_ba_sig_annotated, "output/de_hk3456_ba_sig_with_tpm.csv", row.names = FALSE)
+
+write.csv(de_hk3456_wt_sig_annotated, "output/de_hk3456_wt_sig_with_tpm.csv", row.names = FALSE)
+
+```
+
+### print CHARK expression
+```{r}
+tpm_matrix["Os12g0454800", ]
 ```
 

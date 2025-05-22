@@ -1,0 +1,391 @@
+---
+title: "glmchecks"
+output: html_document
+date: "2024-05-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+# setup
+
+## load libraries
+```{r}
+library(car)
+library(MASS)
+library(RSQLite)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+```
+
+
+## choose traits and load variables
+```{r}
+genes <- c("HK3", "HK4", "HK5", "HK6")
+
+traits <- c(
+  #
+  #
+  #
+  #"mean_internode",
+  #"mean_secondary",
+  "leaf_length",
+  "leaf_width",
+  "leaf_area",
+  "shoot_mass",
+  "root_mass",
+  "tiller_count",
+  "tiller_angle",
+  "internode_1",
+  "internode_2",
+  "plant_height",
+  "heading",
+  "panicles",
+  "exsertion",
+  "panicle_length",
+  "rachis_length",
+  "max_internode",
+  "prim_branches",
+  "max_primary",
+  "sec_branches",
+  "max_secondary",
+  "total_spikelets",
+  "unfilled_spikelets",
+  #"malformed_TS"
+  
+  "malformed_prop" #- use binomial
+
+  # "seed_length"
+)
+
+# if you don't specify the path, the cwd is assumed)
+
+trimmed_cols <- c("genotype", "plant_number", genes)
+```
+
+## get data from sql database
+```{r}
+# Connect to database
+con <- dbConnect(RSQLite::SQLite(), dbname = "data/phenotypedata.sqlite")
+
+# Load the data from the table
+data <- dbReadTable(con, "measurements")
+
+# Trim out unwanted columns
+data_cleaned <- dplyr::select(data, genotype, plant_number, phenotype, measurement, HK3, HK4, HK5, HK6)
+
+data_cleaned <- unique(data_cleaned)
+
+# Transforming the data to wide format
+wide_data <- data_cleaned %>%
+  pivot_wider(names_from = phenotype, values_from = measurement, 
+              id_cols = trimmed_cols, values_fn = mean)
+
+# make wide_data dataframe
+wide_data <- as.data.frame(wide_data)
+
+# make percent fill
+wide_data <- wide_data %>% mutate(percent_fill = (total_spikelets - unfilled_spikelets)/total_spikelets)
+
+# make leaf area
+wide_data <- wide_data %>% mutate(leaf_area = leaf_width * leaf_length)
+
+
+# rename columsn staring with numbers
+wide_data <- wide_data %>% 
+  rename("prim_branches" = "1_branches") %>%
+  rename("sec_branches" = "2_branches")
+
+
+# make proportion malformed:normal_TS
+wide_data <- wide_data %>% mutate(malformed_prop = malformed_TS/prim_branches)
+
+# Disconnect when done
+dbDisconnect(con)
+```
+
+## make genes factors for reverse glm: functional allele = 0, mutant allele = 1
+```{r}
+for (gene in genes) {
+  wide_data[[gene]] <- 1 - wide_data[[gene]]
+  wide_data[[gene]] <- factor(wide_data[[gene]])
+}
+```
+
+## define function to run glm and extract coefficients
+```{r}
+make_glm_results <- function (data_filtered, trait) {
+  # Filter out NA values in the specified trait column
+  data_filtered <- wide_data[(wide_data[[trait]] != "NULL"),]
+  
+  # identifiy column number for trait of interest
+  column_number <- which( colnames(data_filtered) == trait)
+  
+  data_filtered <- data_filtered[!is.na(data_filtered[,column_number]), ]
+  
+  data_filtered <- as.data.frame(data_filtered)
+  
+  # 1. select target dataset
+  target_dataset <- dplyr::select(data_filtered, genotype, HK3, HK4, HK5, HK6, all_of(trait))
+  
+  #get lambda from box cox
+  # Find the minimum value of the response variable
+  min_y <- min(target_dataset[[trait]])
+  
+  # Add a constant to make all values positive (if not already positive)
+  shift_constant <- abs(min_y) + 1
+  
+  shifted_y <- target_dataset
+  
+  shifted_y[[trait]] <- target_dataset[[trait]] + shift_constant
+  
+    # Define the model formula including all interactions
+  formula <- as.formula(paste(trait, "~ HK3 * HK4 * HK5 * HK6"))
+
+  # Fit a GLM; assuming a Gaussian family for continuous traits, adjust if necessary
+  model <- glm(formula, family="gaussian", data = shifted_y)
+  
+  # Calculate the optimal lambda for the trait using Box-Cox
+  bc <- boxcox(model)
+  lambda <- bc$x[which.max(bc$y)]
+  
+  #trnasform model
+  # initizliae transforemd ata
+  transformed_data <- target_dataset
+
+  # Find the minimum value of the response variable to ensure positivity
+  min_y <- min(transformed_data[[trait]])
+  shift_constant <- abs(min_y) + 1
+
+  #make transforemd data
+  transformed_data[[trait]] <- ((transformed_data[[trait]] + shift_constant)^lambda - 1) / lambda
+
+  # convert values to z-scores to normalise the scale
+  transformed_data[[trait]] = scale(transformed_data[[trait]])
+
+  # Define the model formula including all interactions
+  formula <- as.formula(paste(trait, "~ HK3 * HK4 * HK5 * HK6"))
+
+  # Fit the model with the transformed response variable
+  model_transformed <- glm(formula, data = transformed_data)
+  
+  # Residuals of the transformed model
+  residuals_transformed <- residuals(model_transformed)
+
+  # Shapiro-Wilk test for normality of residuals
+  shapiro_test_transformed <- shapiro.test(residuals_transformed)
+  
+  coefficients <- model_transformed$coefficients
+  model_pvalue <- broom::tidy(model_transformed)$p.value
+  shapiro_pvalue <- broom::tidy(shapiro_test_transformed)$p.value
+  
+  return (list(trait = trait, coefficients = coefficients, model_pvalue = model_pvalue, shapiro_pvalue = shapiro_pvalue, lambda = lambda))
+}
+```
+
+# preliminary analysis of traits
+
+## initialize for histograms
+```{r}
+histograms <- list()
+qqplots <- list()
+shapiro_pvalues <- data.frame(trait = character(), p_value = numeric(), stringsAsFactors = FALSE)
+shapiro_log_pvalues <- data.frame(trait = character(), p_value = numeric(), stringsAsFactors = FALSE)
+shapiro_square_pvalues <- data.frame(trait = character(), p_value = numeric(), stringsAsFactors = FALSE)
+```
+
+## set output directory for plots
+```{r}
+output_dir <- "output/traitplots"
+```
+
+## make histograms and qq plots and save to output_dir
+```{r}
+for (trait in traits) {
+  # Filter out NA values in the specified trait column
+  data_filtered <- wide_data[(wide_data[[trait]] != "NULL"),]
+  
+  # identifiy column number for trait of interest
+  column_number <- which( colnames(data_filtered) == trait)
+  
+  column_number
+  
+  
+  
+  data_filtered <- data_filtered[!is.na(data_filtered[,column_number]), ]
+  
+  data_filtered <- as.data.frame(data_filtered)
+  
+  
+  
+  # 1. select target dataset
+  target_dataset <- data_filtered[,column_number]
+  
+  ### 2. normal distribution test
+  
+  
+  #histogram
+  # Start output to a PNG file
+  png(file.path(output_dir, paste(trait, "histogram.png")), width = 800, height = 600)
+  
+  # Create the histogram
+  hist(target_dataset, freq = FALSE, main = paste("Histogram of", trait), xlab = "Values", col = "grey", border = "white")
+  
+  # Add a density plot
+  lines(density(target_dataset), col = "blue")
+  
+  # Calculate mean and standard deviation
+  mean_trait <- mean(target_dataset)
+  sigma <- sd(target_dataset)
+  
+  # Add a normal distribution curve
+  curve(dnorm(x, mean = mean_trait, sd = sigma), col = "red", lwd = 2, add = TRUE)
+  
+  # Close the PNG device
+  dev.off()
+  
+  
+  # run a shapiro-Wilk test to test for the normality. 
+  # If the P value is less than 0.05, you have to transform the trait data.
+  # Perform Shapiro-Wilk test on the dataset for the current trait
+  test_result <- shapiro.test(target_dataset)
+  
+  # Extract the p-value and append to the data frame
+  shapiro_pvalues <- rbind(shapiro_pvalues, data.frame(trait = trait, p_value = test_result$p.value))
+  
+  # qq plot
+  ##Start output to a PNG file
+  png(file.path(output_dir, paste(trait, "qq.png")), width = 800, height = 600)
+  
+  qqnorm(target_dataset)
+  qqline(target_dataset)
+  
+  # Close the PNG device
+  dev.off()
+  
+}
+```
+
+# run glm 
+
+## run glm and extract results
+```{r}
+rev_results <- lapply(traits, make_glm_results, data_filtered=data_filtered)
+```
+
+## make coefficient data frames for each glm
+
+### extract coefficients from glm output into list of dataframes
+```{r}
+rev_coef_list <- list()
+
+for (i in seq_along(rev_results)) {
+  #extract coefficients
+  rev_coefficients <- rev_results[[i]]$coefficients
+  
+  #convert coeffiients to a data frame
+  rev_coef_df <- as.data.frame(t(rev_coefficients))
+  
+  #add columns for each other thing
+  rev_coef_df$trait <- rev_results[[i]]$trait
+  #coef_df$model_pvalue <- results[[i]]$model_pvalue
+  rev_coef_df$shapiro_pvalue <- rev_results[[i]]$shapiro_pvalue
+  rev_coef_df$lambda <- rev_results[[i]]$lambda
+  
+  rev_coef_list[[i]] <- rev_coef_df
+}
+```
+
+### combine list of coefficient dataframes into a single coefficient dataframe for the entire model
+```{r}
+rev_combined_coef <- do.call(rbind, rev_coef_list)
+
+rev_combined_coef
+```
+
+### write coefficient dataframes to csv
+```{r}
+
+write.csv(rev_combined_coef, "output/rev_glm_coefficients.csv")
+```
+
+## make p-value dataframes
+
+#### get column names from variables of coefficients data frame
+```{r}
+column_names <- colnames(rev_combined_coef)
+
+
+# remove extra columns (trait, shapiro pvalue, lambda)
+column_names <- column_names[0:16]
+
+```
+
+### extract pvalues from glm output into list of dataframes
+```{r}
+rev_pvalue_list <- list()
+
+for (i in seq_along(rev_results)) {
+  #extract coefficients
+  rev_pvalues <- rev_results[[i]]$model_pvalue
+  
+  #convert coeffiients to a data frame
+  rev_pvalue_df <- as.data.frame(t(rev_pvalues))
+  
+  # add column names for associated variable
+  colnames(rev_pvalue_df) = column_names
+  
+  #add columns for each other thing
+  rev_pvalue_df$trait <- rev_results[[i]]$trait
+
+
+  rev_pvalue_list[[i]] <- rev_pvalue_df
+}
+```
+
+### combine list of pvalue dataframes into a single pvalue dataframe for the entire model
+```{r}
+rev_combined_pvalue <- do.call(rbind, rev_pvalue_list)
+
+rev_combined_pvalue
+
+```
+
+### write pvalue dataframes to csv
+```{r}
+
+write.csv(rev_combined_pvalue, "output/rev_glm_pvalue.csv")
+```
+
+# make heatmap
+```{r}
+library(pheatmap)
+
+all_coef <- read.csv("output/rev_glm_coefficients.csv")
+
+traits_coeffs <- subset(all_coef, select = -c(trait, shapiro_pvalue, lambda))
+rownames(traits_coeffs) = all_coef$trait
+
+# Remove columns entirely filled with NA
+traits_coeffs <- traits_coeffs[, colSums(!is.na(traits_coeffs)) > 0]
+#write.csv(combined_coef, "C:/data/2024.09.09_heatmapstuff/gauss_rev_final_coefficients.csv")
+#traits_pvalues <- as.data.frame(do.call(rbind, traits_pvalues_list))
+#write.csv(traits_pvalues, "C:/data/2024.05.15_attempts/pvalues.csv")
+breaks <- seq(-2, 2, length.out = 101)
+
+
+#traits_coeffs[is.na(traits_coeffs)] = 0
+p_rev <- pheatmap(traits_coeffs[, -1], 
+         breaks = breaks,
+         na_col = "grey",
+         show_rownames=TRUE, 
+         cluster_cols = FALSE, 
+         cluster_rows = FALSE)
+
+p_rev
+```
+
