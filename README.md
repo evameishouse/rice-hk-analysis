@@ -1,7 +1,7 @@
 # RNA-seq and Data Analysis for "Phenotypic effects of disruption of all four rice HK cytokinin receptors"
 
 This repository contains code, input, and output files associated with the analysis described in  
-**"Phenotypic effects of disruption of all four rice HK cytokinin receptors"**, submitted to *Plant Physiology*.
+**Cytokinin histidine kinase receptors regulate multiple aspects of rice growth and development**, submitted to *Plant Physiology*.
 
 The repository includes:
 - RNA-seq quantification and differential expression analysis
